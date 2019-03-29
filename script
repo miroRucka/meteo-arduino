@@ -1,0 +1,149 @@
+#include <ESP8266HTTPClient.h>
+#include <ESP8266WiFi.h>
+#include <ArduinoJson.h>
+#include <AM2320.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <Wire.h>
+#include <Adafruit_BMP085.h>
+#include <BH1750FVI.h>
+#include "SparkFunBME280.h"
+
+const char* ssid     = "########";
+const char* password = "########";
+
+const char* apiServer = "http://api.horske.info/api/sensors";
+const char* apiAuth = "Basic c3VzbGlrOlN1c2xpazEyMw==";
+
+const char* locationId = "arduino_006";
+const char* location = "Arduino test!";
+
+const int elevation = 394;
+
+const float sleepTime = 420e6;
+
+const int wifiAtemptConnectCount = 80;
+
+void setup() {
+  Serial.begin(115200);
+  DynamicJsonDocument doc = initSensorJson();
+  connectToWifi();
+  //measureBH1750(doc);
+  //measureBMP180(doc);
+  measureBMP280(doc);
+  //measureDs18b20(doc);
+  measureAM2320(doc);
+  postData(doc);
+  ESP.deepSleep(sleepTime);
+}
+
+void connectToWifi() {
+  int attempt = 0;
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    if(attempt > wifiAtemptConnectCount){
+      Serial.println("Cause: attempts to connect is too much -> go sleep");
+      ESP.deepSleep(sleepTime);  
+    }
+    delay(500);
+    Serial.print(" (");
+    Serial.print(attempt);
+    Serial.print(") ");
+    attempt++;
+  }
+  Serial.println("Your IP address is: ");
+  Serial.println(WiFi.localIP());
+}
+
+void postData(DynamicJsonDocument doc) {
+  String result;
+  serializeJson(doc, result);
+  Serial.print("data to send > ");
+  Serial.println(result);
+  HTTPClient http;
+  http.begin(apiServer);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", apiAuth);
+  int httpCode = http.POST(result);
+}
+
+DynamicJsonDocument initSensorJson() {
+  DynamicJsonDocument doc(1024);
+  doc["location"] = location;
+  doc["locationId"] = locationId;
+  doc["timestamp"] = millis();
+  doc["note"] = "nothing special";
+  doc.createNestedArray("temperature");
+  return doc;
+}
+
+void measureAM2320(DynamicJsonDocument &doc) {
+  AM2320 sensor;
+  sensor.begin(12, 14);
+  if (sensor.measure()) {
+    doc["humidity"] = sensor.getHumidity();
+    JsonVariant temperature = doc.getMember("temperature");
+    JsonObject t3 = temperature.createNestedObject();
+    t3["key"] = "t3";
+    t3["value"] = sensor.getTemperature();
+  }
+  else {  // error has occured
+    switch (sensor.getErrorCode()) {
+      case 1: Serial.println("ERR: Sensor is offline"); break;
+      case 2: Serial.println("ERR: CRC validation failed."); break;
+    }
+  }
+}
+
+void measureDs18b20(DynamicJsonDocument &doc) {
+  OneWire oneWire(2);
+  DallasTemperature sensors(&oneWire);
+  sensors.begin();
+  sensors.requestTemperatures();
+  JsonVariant temperature = doc.getMember("temperature");
+  JsonObject t2 = temperature.createNestedObject();
+  t2["key"] = "t2";
+  t2["value"] = sensors.getTempCByIndex(0);
+}
+
+void measureBMP180(DynamicJsonDocument &doc) {
+  Adafruit_BMP085 bmp;
+  if (!bmp.begin()) {
+    Serial.println("Could not find a valid BMP185 sensor, check wiring!");
+  } else {
+    doc["pressure"] = bmp.readSealevelPressure(elevation) / 100;
+    JsonVariant temperature = doc.getMember("temperature");
+    JsonObject t1 = temperature.createNestedObject();
+    t1["key"] = "t1";
+    t1["value"] = bmp.readTemperature();
+  }
+}
+
+void measureBMP280(DynamicJsonDocument &doc) {
+  BME280 bmp280;
+  Wire.begin();
+  bmp280.setI2CAddress(0x76); //Connect to a second sensor
+  if (bmp280.beginI2C() == false) {
+    Serial.println("Sensor B connect failed");
+  } else {
+    Serial.print(bmp280.readFloatPressure(), 0);
+    Serial.print(bmp280.readTempF(), 2);
+    doc["pressure"] = bmp280.readFloatPressure() / 100;
+    JsonVariant temperature = doc.getMember("temperature");
+    JsonObject t1 = temperature.createNestedObject();
+    t1["key"] = "t1";
+    t1["value"] = bmp280.readTempC();
+  }
+}
+
+void measureBH1750(DynamicJsonDocument &doc) {
+  uint8_t ADDRESSPIN = 13;
+  BH1750FVI::eDeviceAddress_t DEVICEADDRESS = BH1750FVI::k_DevAddress_H;
+  BH1750FVI::eDeviceMode_t DEVICEMODE = BH1750FVI::k_DevModeContHighRes;
+  BH1750FVI LightSensor(ADDRESSPIN, DEVICEADDRESS, DEVICEMODE);
+  LightSensor.begin();
+  doc["light"] = LightSensor.GetLightIntensity();
+}
+
+void loop() {
+}
